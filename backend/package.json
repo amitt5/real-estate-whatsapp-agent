@@ -1,0 +1,24 @@
+{
+  "name": "real-estate-whatsapp-agent",
+  "version": "1.0.0",
+  "description": "AI WhatsApp agent for real estate company",
+  "main": "src/app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "ai",
+    "real-estate"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1",
+    "openai": "^4.20.0",
+    "axios": "^1.6.2"
+  }
+}
