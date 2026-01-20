@@ -1,138 +1,159 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 
-// Evolution API webhook payload types
-interface EvolutionWebhookPayload {
-  event?: string;
-  instance?: string;
-  data?: {
-    key?: {
-      remoteJid?: string;
-      id?: string;
-      fromMe?: boolean;
-    };
-    message?: {
-      conversation?: string;
-      extendedTextMessage?: {
-        text?: string;
-      };
-    };
+// WasenderAPI webhook payload types
+interface WasenderMessageKey {
+  id?: string;
+  fromMe?: boolean;
+  remoteJid?: string;
+  cleanedSenderPn?: string;
+  cleanedParticipantPn?: string;
+}
+
+interface WasenderMessagesPayload {
+  key?: WasenderMessageKey;
+  messageBody?: string;
+  message?: {
+    conversation?: string;
   };
-  sender?: string;
-  server_url?: string;
-  apikey?: string;
+  [key: string]: any;
+}
+
+interface WasenderWebhookPayload {
+  event?: string;
+  timestamp?: number;
+  data?: {
+    messages?: WasenderMessagesPayload;
+    [key: string]: any;
+  };
   [key: string]: any;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const payload: EvolutionWebhookPayload = await request.json();
-    
+    const payload: WasenderWebhookPayload = await request.json();
+
     // Log full payload for debugging
-    console.log('\n=== Webhook Received ===');
+    console.log('\n=== Webhook Received (WasenderAPI) ===');
     console.log('Full payload:', JSON.stringify(payload, null, 2));
-    
-    // Extract message information based on Evolution API structure
+
+    // Extract message information based on WasenderAPI structure
     let messageText: string | null = null;
     let senderPhone: string | null = null;
     let messageId: string | null = null;
-    
-    // Evolution API typically sends data in different formats
-    // Handle common structures
-    if (payload.data) {
-      const data = payload.data;
-      
-      // Extract sender phone number (remoteJid)
-      if (data.key?.remoteJid) {
-        senderPhone = data.key.remoteJid.replace('@s.whatsapp.net', '').replace('@c.us', '');
-      }
-      
-      // Extract message ID
-      if (data.key?.id) {
-        messageId = data.key.id;
-      }
-      
-      // Extract message text from different message types
-      if (data.message) {
-        const message = data.message;
-        
-        // Text message (simple)
-        if (message.conversation) {
-          messageText = message.conversation;
-        }
-        // Extended text message
-        else if (message.extendedTextMessage?.text) {
-          messageText = message.extendedTextMessage.text;
-        }
-        // Other message types can be added here
+    let fromMe: boolean | undefined;
+
+    const messages = payload.data?.messages;
+
+    if (messages) {
+      const key = messages.key;
+      fromMe = key?.fromMe;
+      messageId = key?.id || null;
+
+      // Prefer cleanedSenderPn for private chats, fallback to cleanedParticipantPn for groups
+      senderPhone =
+        key?.cleanedSenderPn ||
+        key?.cleanedParticipantPn ||
+        null;
+
+      // Unified message body field
+      if (messages.messageBody) {
+        messageText = messages.messageBody;
+      } else if (messages.message?.conversation) {
+        messageText = messages.message.conversation;
       }
     }
-    
+
     // Log extracted information
-    console.log('\n--- Extracted Information ---');
+    console.log('\n--- Extracted Information (WasenderAPI) ---');
+    console.log('Event:', payload.event || 'Not found');
     console.log('Sender Phone:', senderPhone || 'Not found');
     console.log('Message ID:', messageId || 'Not found');
+    console.log('FromMe:', fromMe ?? 'Not found');
     console.log('Message Text:', messageText || 'Not found');
-    console.log('===========================\n');
-    
-    // Send hardcoded reply if it's a message event and not from me
-    if (payload.event === 'messages.upsert' && payload.data?.key?.fromMe === false && messageText) {
+    console.log('=========================================\n');
+
+    // Decide when to reply:
+    // - Event is one of the incoming message events
+    // - Message is not from this session (fromMe === false)
+    // - We have a sender phone and some text
+    const isIncomingEvent =
+      payload.event === 'messages.received' ||
+      payload.event === 'personal.message.received' ||
+      payload.event === 'messages.upsert';
+
+    if (isIncomingEvent && fromMe === false && senderPhone && messageText) {
       try {
-        // Get Evolution API configuration from payload or environment
-        const evolutionApiUrl = payload.server_url || process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-        const evolutionApiKey = payload.apikey || process.env.EVOLUTION_API_KEY || '';
-        const instanceName = payload.instance || process.env.EVOLUTION_INSTANCE_NAME || 'default';
-        
-        // Get sender's WhatsApp ID (use sender from payload or construct from remoteJid)
-        const senderWhatsAppId = payload.sender || payload.data?.key?.remoteJid || '';
-        
-        if (senderWhatsAppId) {
-          // Hardcoded reply message
+        const baseUrl =
+          process.env.WASENDER_API_BASE_URL?.replace(/\/+$/, '') ||
+          'https://wasenderapi.com/api';
+        const apiToken = process.env.WASENDER_API_TOKEN;
+
+        if (!apiToken) {
+          console.warn(
+            'WASENDER_API_TOKEN is not set. Skipping reply send.'
+          );
+        } else {
+          const sendMessageUrl = `${baseUrl}/send-message`;
           const replyMessage = 'how is it going?';
-          
-          // Send message via Evolution API
-          const sendMessageUrl = `${evolutionApiUrl}/message/sendText/${instanceName}`;
-          
-          console.log('\n--- Sending Reply ---');
-          console.log('To:', senderWhatsAppId);
+
+          // Ensure phone number is in E.164 format (prefix with + if missing)
+          const to =
+            senderPhone.startsWith('+') ? senderPhone : `+${senderPhone}`;
+
+          console.log('\n--- Sending Reply via WasenderAPI ---');
+          console.log('To:', to);
           console.log('Message:', replyMessage);
-          
+          console.log('POST', sendMessageUrl);
+
           await axios.post(
             sendMessageUrl,
             {
-              number: senderWhatsAppId,
+              to,
               text: replyMessage,
             },
             {
               headers: {
-                'apikey': evolutionApiKey,
+                Authorization: `Bearer ${apiToken}`,
                 'Content-Type': 'application/json',
               },
             }
           );
-          
-          console.log('Reply sent successfully!\n');
+
+          console.log('Reply sent successfully via WasenderAPI!\n');
         }
       } catch (error: any) {
-        console.error('Error sending reply:', error.response?.data || error.message);
+        console.error('Error sending reply via WasenderAPI:');
+        if (error.response) {
+          console.error('Status:', error.response.status);
+          console.error('Data:', error.response.data);
+        } else {
+          console.error('Message:', error.message);
+        }
       }
+    } else {
+      console.log('\n--- Reply NOT sent (WasenderAPI conditions not met) ---');
+      console.log('isIncomingEvent:', isIncomingEvent);
+      console.log('fromMe:', fromMe);
+      console.log('senderPhone:', senderPhone);
+      console.log('messageText:', messageText);
+      console.log('------------------------------------------------------\n');
     }
-    
-    // Return success response to Evolution API
+
+    // Return success response to WasenderAPI
     return NextResponse.json(
-      { 
+      {
         status: 'received',
-        message: 'Webhook processed successfully'
+        message: 'Webhook processed successfully',
       },
       { status: 200 }
     );
-    
   } catch (error) {
-    console.error('Error processing webhook:', error);
+    console.error('Error processing WasenderAPI webhook:', error);
     return NextResponse.json(
-      { 
+      {
         status: 'error',
-        message: 'Failed to process webhook'
+        message: 'Failed to process webhook',
       },
       { status: 500 }
     );
